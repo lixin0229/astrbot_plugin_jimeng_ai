@@ -4,79 +4,24 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from astrbot.api import (
-    AstrBotMessage,
-    CommandResult,
-    Context,
-    LLMToolCall,
-    LLMToolResult,
-    MessageChain,
-    Plain,
-    Image,
-    logger,
-    register,
-)
+from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.star import Context, Star, register
+from astrbot.api import logger
+from astrbot.api.event import MessageChain
+from astrbot.api.message_components import Plain, Image
+from astrbot.api.llm_tool import LLMToolCall, LLMToolResult
 
 from .utils.jimeng_api import generate_image_jimeng
 
 
-class JiMengAIPlugin:
-    """即梦AI绘图插件"""
-
+@register("jimeng-ai", "lixin0229", "基于即梦AI接口的图像生成插件，支持多token轮询和丰富的参数配置", "1.0.0")
+class JiMengAIPlugin(Star):
     def __init__(self, context: Context):
-        self.context = context
+        super().__init__(context)
         self.config = context.config_helper.get_all()
         
         # 验证配置
         self._validate_config()
-        
-        # 注册命令和LLM工具
-        register.command(
-            "jimeng", 
-            "即梦AI绘图", 
-            "使用即梦AI生成图像\n用法: /jimeng <提示词> [参数]\n参数: --model <模型> --size <宽度>x<高度> --strength <精细度>",
-            1
-        )(self.jimeng_command)
-        
-        register.llm_tool(
-            "jimeng_ai_image_generation",
-            "即梦AI图像生成工具",
-            {
-                "type": "object",
-                "properties": {
-                    "prompt": {
-                        "type": "string",
-                        "description": "图像生成的提示词，描述要生成的图像内容"
-                    },
-                    "negative_prompt": {
-                        "type": "string", 
-                        "description": "反向提示词，描述不希望出现的内容",
-                        "default": ""
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "使用的模型名称",
-                        "default": "jimeng-3.0"
-                    },
-                    "width": {
-                        "type": "integer",
-                        "description": "图像宽度 (64-2048)",
-                        "default": 1024
-                    },
-                    "height": {
-                        "type": "integer", 
-                        "description": "图像高度 (64-2048)",
-                        "default": 1024
-                    },
-                    "sample_strength": {
-                        "type": "number",
-                        "description": "生成精细度 (0.0-1.0)",
-                        "default": 0.5
-                    }
-                },
-                "required": ["prompt"]
-            }
-        )(self.llm_image_generation)
 
     def _validate_config(self):
         """验证插件配置"""
@@ -101,68 +46,58 @@ class JiMengAIPlugin:
         
         logger.info(f"即梦AI插件已加载，配置了 {len(self.api_tokens)} 个token")
 
-    async def jimeng_command(self, message: AstrBotMessage) -> CommandResult:
+    @filter.command("jimeng")
+    async def jimeng_command(self, event: AstrMessageEvent):
         """处理 /jimeng 命令"""
         try:
             # 解析命令参数
-            args = self._parse_command_args(message.message)
+            args = self._parse_command_args(event.message_str)
             
             if not args.get("prompt"):
-                return CommandResult().message("❌ 请提供图像生成提示词\n用法: /jimeng <提示词> [参数]")
+                yield event.plain_result("❌ 请提供图像生成提示词\n用法: /jimeng <提示词> [参数]")
+                return
             
             # 检查群组权限
-            if not self._check_group_permission(message):
-                return CommandResult().message("❌ 此群组未开启即梦AI绘图功能")
+            if not self._check_group_permission(event):
+                yield event.plain_result("❌ 此群组未开启即梦AI绘图功能")
+                return
             
             # 生成图像
-            result_msg = await self._generate_image_with_feedback(args, message)
-            return CommandResult().message(result_msg)
+            result_msg = await self._generate_image_with_feedback(args, event)
+            yield result_msg
             
         except Exception as e:
             logger.error(f"即梦AI命令处理失败: {e}")
-            return CommandResult().message(f"❌ 处理失败: {str(e)}")
+            yield event.plain_result(f"❌ 处理失败: {str(e)}")
 
-    async def llm_image_generation(self, tool_call: LLMToolCall) -> LLMToolResult:
+    @filter.llm_tool(name="jimeng_ai_image_generation")
+    async def llm_image_generation(self, event: AstrMessageEvent, prompt: str, negative_prompt: str = "", model: str = "jimeng-3.0", width: int = 1024, height: int = 1024, sample_strength: float = 0.5):
         """LLM工具：图像生成"""
         try:
-            args = tool_call.arguments
-            
             # 生成图像
             image_url, image_path = await generate_image_jimeng(
-                prompt=args["prompt"],
+                prompt=prompt,
                 api_tokens=self.api_tokens,
                 api_base_url=self.config["api_base_url"],
-                model=args.get("model", self.config.get("default_model", "jimeng-3.0")),
-                negative_prompt=args.get("negative_prompt", ""),
-                width=args.get("width", self.config.get("default_width", 1024)),
-                height=args.get("height", self.config.get("default_height", 1024)),
-                sample_strength=args.get("sample_strength", self.config.get("default_sample_strength", 0.5)),
+                model=model or self.config.get("default_model", "jimeng-3.0"),
+                negative_prompt=negative_prompt,
+                width=width or self.config.get("default_width", 1024),
+                height=height or self.config.get("default_height", 1024),
+                sample_strength=sample_strength or self.config.get("default_sample_strength", 0.5),
                 max_retry_attempts=self.config.get("max_retry_attempts", 3),
                 timeout_seconds=self.config.get("timeout_seconds", 60),
             )
             
             if image_path:
-                return LLMToolResult(
-                    tool_call_id=tool_call.tool_call_id,
-                    content=f"✅ 图像生成成功！\n提示词: {args['prompt']}\n图像已保存到: {image_path}"
-                )
+                yield event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像已保存到: {image_path}")
             elif image_url:
-                return LLMToolResult(
-                    tool_call_id=tool_call.tool_call_id,
-                    content=f"✅ 图像生成成功！\n提示词: {args['prompt']}\n图像URL: {image_url}"
-                )
+                yield event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像URL: {image_url}")
             else:
-                return LLMToolResult(
-                    tool_call_id=tool_call.tool_call_id,
-                    content=f"❌ 图像生成失败，请稍后重试"
-                )
+                yield event.plain_result(f"❌ 图像生成失败，请稍后重试")
                 
         except Exception as e:
             logger.error(f"LLM图像生成工具失败: {e}")
-            return LLMToolResult(
-                tool_call_id=tool_call.tool_call_id,
-                content=f"❌ 图像生成失败: {str(e)}"
-            )
+            yield event.plain_result(f"❌ 图像生成失败: {str(e)}")
 
     def _parse_command_args(self, message_text: str) -> Dict:
         """解析命令参数"""
@@ -203,13 +138,13 @@ class JiMengAIPlugin:
         
         return args
 
-    def _check_group_permission(self, message: AstrBotMessage) -> bool:
+    def _check_group_permission(self, event: AstrMessageEvent) -> bool:
         """检查群组权限"""
         if not self.config.get("enable_group_control", False):
             return True
         
         # 如果是私聊，总是允许
-        if not hasattr(message, 'session_id') or not message.session_id:
+        if event.is_private_chat():
             return True
         
         # 检查群组白名单
@@ -217,9 +152,10 @@ class JiMengAIPlugin:
         if not allowed_groups:
             return True
         
-        return str(message.session_id) in [str(g) for g in allowed_groups]
+        group_id = event.get_group_id()
+        return str(group_id) in [str(g) for g in allowed_groups] if group_id else False
 
-    async def _generate_image_with_feedback(self, args: Dict, message: AstrBotMessage) -> Union[MessageChain, str]:
+    async def _generate_image_with_feedback(self, args: Dict, event: AstrMessageEvent) -> Union[MessageChain, str]:
         """生成图像并提供反馈"""
         # 发送开始生成的消息
         prompt = args["prompt"]
@@ -254,7 +190,6 @@ class JiMengAIPlugin:
         else:
             return f"❌ 图像生成失败，请检查配置或稍后重试\n📝 提示词: {prompt}"
 
-
-def register_plugin(context: Context):
-    """注册插件"""
-    return JiMengAIPlugin(context)
+    async def terminate(self):
+        """插件卸载时调用"""
+        logger.info("即梦AI插件已卸载")
