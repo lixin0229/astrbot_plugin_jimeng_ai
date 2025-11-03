@@ -435,11 +435,16 @@ class JiMengAIPlugin(Star):
             )
             
             if image_paths:
-                if len(image_paths) == 1:
-                    await event.send(event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像已保存到: {image_paths[0]}"))
-                else:
-                    paths_text = "\n".join([f"  {i+1}. {path}" for i, path in enumerate(image_paths)])
-                    await event.send(event.plain_result(f"✅ 成功生成 {len(image_paths)} 张图像！\n提示词: {prompt}\n图像已保存到:\n{paths_text}"))
+                # 构建包含图片的消息链
+                message_components = [Plain(f"✅ 成功生成 {len(image_paths)} 张图像！\n提示词: {prompt}\n")]
+                
+                for i, image_path in enumerate(image_paths):
+                    message_components.append(Image(path=image_path))
+                    if i < len(image_paths) - 1:  # 不是最后一张图片时添加换行
+                        message_components.append(Plain("\n"))
+                
+                result_message = MessageChain(message_components)
+                await event.send(result_message)
             else:
                 await event.send(event.plain_result(f"❌ 图像生成失败，请稍后重试"))
                 
