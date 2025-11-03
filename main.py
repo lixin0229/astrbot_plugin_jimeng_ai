@@ -4,22 +4,251 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageChain
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.api.message_components import Plain, Image
+from astrbot.core.message.components import Reply, Image
+from typing import Optional, List, Tuple
+import asyncio
+import base64
+import json
+import uuid
+from datetime import datetime
+from pathlib import Path
+import httpx
 
-try:
-    from .utils.jimeng_api import generate_image_jimeng
-except ImportError:
-    # 如果相对导入失败，尝试其他方法
-    import sys
-    import os
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    utils_dir = os.path.join(current_dir, 'utils')
-    if utils_dir not in sys.path:
-        sys.path.insert(0, utils_dir)
-    from jimeng_api import generate_image_jimeng
+
+class _TokenState:
+    """Token轮询状态管理"""
+    def __init__(self):
+        self.token_index = 0
+        self._lock = asyncio.Lock()
+
+    async def get_next_token(self, tokens: List[str]) -> str:
+        """获取下一个可用的token"""
+        async with self._lock:
+            if not tokens:
+                raise ValueError("Token列表为空")
+            token = tokens[self.token_index % len(tokens)]
+            return token
+
+    async def rotate(self, tokens: List[str]):
+        """轮换到下一个token"""
+        async with self._lock:
+            if tokens:
+                self.token_index = (self.token_index + 1) % len(tokens)
+
+
+_token_state = _TokenState()
+
+
+async def _save_image_bytes(content: bytes, suffix: str = "png") -> str:
+    """保存图像字节数据到文件"""
+    plugin_root = Path(__file__).parent
+    images_dir = plugin_root / "images"
+    images_dir.mkdir(exist_ok=True)
+    
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    uid = uuid.uuid4().hex[:8]
+    file_path = images_dir / f"jimeng_image_{ts}_{uid}.{suffix}"
+    
+    file_path.write_bytes(content)
+    return str(file_path)
+
+
+async def _decode_and_save_base64(data_b64: str) -> str:
+    """解码base64图像数据并保存"""
+    # 处理data URL格式
+    if data_b64.startswith("data:"):
+        try:
+            header, b64_data = data_b64.split(",", 1)
+            data_b64 = b64_data
+        except Exception:
+            pass
+    
+    try:
+        image_bytes = base64.b64decode(data_b64)
+        return await _save_image_bytes(image_bytes)
+    except Exception as e:
+        logger.error(f"解码base64图像失败: {e}")
+        raise
+
+
+async def generate_image_jimeng(
+    prompt: str,
+    api_tokens: List[str],
+    api_base_url: str,
+    model: str = "jimeng-3.0",
+    negative_prompt: str = "",
+    width: int = 1024,
+    height: int = 1024,
+    sample_strength: float = 0.5,
+    max_retry_attempts: int = 3,
+    timeout_seconds: int = 60,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    使用即梦AI生成图像
+    
+    Args:
+        prompt: 提示词
+        api_tokens: API token列表
+        api_base_url: API基础地址
+        model: 模型名称
+        negative_prompt: 反向提示词
+        width: 图像宽度
+        height: 图像高度
+        sample_strength: 精细度 (0.0-1.0)
+        max_retry_attempts: 最大重试次数
+        timeout_seconds: 超时时间
+    
+    Returns:
+        (image_url, image_path) 元组，image_url可能为None
+    """
+    if isinstance(api_tokens, str):
+        api_tokens = [api_tokens]
+
+    if not api_tokens:
+        logger.error("未提供API token")
+        return None, None
+
+    # 验证参数
+    sample_strength = max(0.0, min(1.0, sample_strength))
+    width = max(64, min(2048, width))
+    height = max(64, min(2048, height))
+
+    # 尝试每个token
+    for token_attempt in range(len(api_tokens)):
+        current_token = await _token_state.get_next_token(api_tokens)
+
+        for attempt in range(max_retry_attempts):
+            if attempt > 0:
+                # 指数退避
+                await asyncio.sleep(min(2 ** attempt, 10))
+
+            try:
+                url = f"{api_base_url.rstrip('/')}/v1/chat/completions"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {current_token}"
+                }
+
+                # 使用OpenAI格式的messages，同时包含即梦AI的参数
+                payload = {
+                    "model": model,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": prompt
+                        }
+                    ],
+                    "prompt": prompt,
+                    "negativePrompt": negative_prompt,
+                    "width": width,
+                    "height": height,
+                    "sample_strength": sample_strength
+                }
+
+                logger.info(f"即梦AI请求: {model}, 尺寸: {width}x{height}, 精细度: {sample_strength}")
+                logger.debug(f"请求URL: {url}")
+                logger.debug(f"提示词: {prompt[:100]}...")
+
+                async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+
+                    if response.status_code == 200:
+                        try:
+                            data = response.json()
+                            
+                            # 检查响应格式
+                            if "error" in data:
+                                logger.error(f"即梦AI API错误: {data['error']}")
+                                continue
+                            
+                            # 尝试不同的响应格式
+                            image_data = None
+                            image_url = None
+                            
+                            # 格式1: OpenAI格式的choices
+                            if "choices" in data and data["choices"]:
+                                choice = data["choices"][0]
+                                if "message" in choice and "content" in choice["message"]:
+                                    content = choice["message"]["content"]
+                                    # 检查是否包含图像URL
+                                    if "![image_" in content and "https://" in content:
+                                        # 提取URL
+                                        import re
+                                        url_match = re.search(r'https://[^\s\)]+', content)
+                                        if url_match:
+                                            image_url = url_match.group(0)
+                                    elif isinstance(content, str) and len(content) > 100:
+                                        # 可能是base64数据
+                                        image_data = content
+                            
+                            # 格式2: 直接返回base64数据
+                            elif "data" in data and isinstance(data["data"], str):
+                                image_data = data["data"]
+                            
+                            # 格式3: 直接在根级别
+                            elif "image" in data:
+                                if isinstance(data["image"], str):
+                                    image_data = data["image"]
+                                elif isinstance(data["image"], dict) and "data" in data["image"]:
+                                    image_data = data["image"]["data"]
+                            
+                            # 格式4: URL格式
+                            elif "url" in data:
+                                image_url = data["url"]
+                            
+                            # 处理base64数据
+                            if image_data:
+                                try:
+                                    image_path = await _decode_and_save_base64(image_data)
+                                    logger.info(f"✅ 即梦AI图像生成成功，已保存到: {image_path}")
+                                    return image_url, image_path
+                                except Exception as e:
+                                    logger.error(f"保存图像失败: {e}")
+                                    continue
+                            
+                            # 处理URL
+                            elif image_url:
+                                logger.info(f"✅ 即梦AI图像生成成功，URL: {image_url}")
+                                return image_url, None
+                            
+                            else:
+                                logger.warning(f"未找到图像数据，响应结构: {json.dumps(data, indent=2)[:500]}...")
+                                continue
+
+                        except json.JSONDecodeError as e:
+                            logger.error(f"解析JSON响应失败: {e}")
+                            logger.debug(f"响应内容: {response.text[:200]}...")
+                            continue
+
+                    elif response.status_code == 401:
+                        logger.warning(f"Token认证失败，尝试下一个token")
+                        break  # 跳出重试循环，尝试下一个token
+                    
+                    elif response.status_code == 429:
+                        logger.warning(f"请求频率限制，等待后重试")
+                        await asyncio.sleep(5)
+                        continue
+                    
+                    else:
+                        logger.error(f"即梦AI API请求失败: {response.status_code}")
+                        logger.debug(f"响应内容: {response.text[:200]}...")
+                        continue
+
+            except httpx.TimeoutException:
+                logger.warning(f"请求超时，重试中... (尝试 {attempt + 1}/{max_retry_attempts})")
+                continue
+            except Exception as e:
+                logger.error(f"请求异常: {e}")
+                continue
+
+        # 当前token失败，轮换到下一个
+        await _token_state.rotate(api_tokens)
+
+    logger.error("所有token都失败了")
+    return None, None
 
 
 @register("jimeng-ai", "lixin0229", "基于即梦AI接口的图像生成插件，支持多token轮询和丰富的参数配置", "1.0.0")
