@@ -69,32 +69,27 @@ class JiMengAIPlugin(Star):
             yield event.plain_result(f"❌ 处理失败: {str(e)}")
 
     @filter.llm_tool(name="jimeng_ai_image_generation")
-    async def llm_image_generation(self, event: AstrMessageEvent, prompt: str, negative_prompt: str = "", model: str = "jimeng-3.0", width: int = 1024, height: int = 1024, sample_strength: float = 0.5):
+    async def llm_image_generation(self, event: AstrMessageEvent, prompt: str):
         """
         LLM工具：使用即梦AI生成图像
         
         Args:
-            prompt(str): 图像生成提示词，描述想要生成的图像内容
-            negative_prompt(str): 负面提示词，描述不希望出现的内容（可选）
-            model(str): 使用的模型，默认为jimeng-3.0
-            width(int): 图像宽度，默认1024
-            height(int): 图像高度，默认1024
-            sample_strength(float): 采样强度，默认0.5
+            prompt(string): 图像生成提示词，描述想要生成的图像内容
         """
         try:
             # 发送状态消息
             await event.send(event.plain_result("🎨 正在使用即梦AI为您生成图像，请稍候..."))
             
-            # 生成图像
+            # 生成图像，使用默认配置
             image_url, image_path = await generate_image_jimeng(
                 prompt=prompt,
                 api_tokens=self.api_tokens,
                 api_base_url=self.config["api_base_url"],
-                model=model or self.config.get("default_model", "jimeng-3.0"),
-                negative_prompt=negative_prompt,
-                width=width or self.config.get("default_width", 1024),
-                height=height or self.config.get("default_height", 1024),
-                sample_strength=sample_strength or self.config.get("default_sample_strength", 0.5),
+                model=self.config.get("default_model", "jimeng-3.0"),
+                negative_prompt=self.config.get("default_negative_prompt", ""),
+                width=self.config.get("default_width", 1024),
+                height=self.config.get("default_height", 1024),
+                sample_strength=self.config.get("default_sample_strength", 0.5),
                 max_retry_attempts=self.config.get("max_retry_attempts", 3),
                 timeout_seconds=self.config.get("timeout_seconds", 60),
             )
