@@ -9,7 +9,17 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.api.message_components import Plain, Image
 
-from .utils.jimeng_api import generate_image_jimeng
+try:
+    from .utils.jimeng_api import generate_image_jimeng
+except ImportError:
+    # 如果相对导入失败，尝试其他方法
+    import sys
+    import os
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    utils_dir = os.path.join(current_dir, 'utils')
+    if utils_dir not in sys.path:
+        sys.path.insert(0, utils_dir)
+    from jimeng_api import generate_image_jimeng
 
 
 @register("jimeng-ai", "lixin0229", "基于即梦AI接口的图像生成插件，支持多token轮询和丰富的参数配置", "1.0.0")
