@@ -1,0 +1,74 @@
+{
+  "api_base_url": {
+    "description": "即梦AI API基础地址",
+    "type": "string",
+    "default": "http://xxx:8101"
+  },
+  "api_tokens": {
+    "description": "API Token列表（支持多个token轮询）",
+    "type": "list",
+    "default": ["xxx"]
+  },
+  "default_model": {
+    "description": "默认模型",
+    "type": "string",
+    "options": ["jimeng-3.0", "jimeng-2.1", "jimeng-2.0-pro", "jimeng-2.0", "jimeng-1.4", "jimeng-xl-pro"],
+    "default": "jimeng-3.0"
+  },
+  "default_width": {
+    "description": "默认图像宽度",
+    "type": "int",
+    "default": 1024
+  },
+  "default_height": {
+    "description": "默认图像高度",
+    "type": "int",
+    "default": 1024
+  },
+  "default_sample_strength": {
+    "description": "默认精细度 (0.0-1.0)",
+    "type": "float",
+    "default": 0.5
+  },
+  "group_control_mode": {
+    "description": "群控制模式",
+    "type": "string",
+    "options": ["off", "whitelist", "blacklist"],
+    "default": "off"
+  },
+  "group_list": {
+    "description": "群白/黑名单列表（群号字符串）",
+    "type": "list",
+    "default": []
+  },
+  "group_rate_window_seconds": {
+    "description": "群调用限流周期（秒）",
+    "type": "int",
+    "default": 3600
+  },
+  "group_rate_max_calls": {
+    "description": "单群每周期最大调用次数",
+    "type": "int",
+    "default": 50
+  },
+  "max_retry_attempts": {
+    "description": "每个token的最大重试次数",
+    "type": "int",
+    "default": 3
+  },
+  "timeout_seconds": {
+    "description": "请求超时时间（秒）",
+    "type": "int",
+    "default": 60
+  },
+  "nap_server_address": {
+    "description": "Napcat 文件转发主机（可选）",
+    "type": "string",
+    "default": ""
+  },
+  "nap_server_port": {
+    "description": "Napcat 文件转发端口（可选）",
+    "type": "int",
+    "default": 6174
+  }
+}
