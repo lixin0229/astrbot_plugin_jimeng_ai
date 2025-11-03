@@ -439,7 +439,7 @@ class JiMengAIPlugin(Star):
                 message_components = [Plain(f"✅ 成功生成 {len(image_paths)} 张图像！\n提示词: {prompt}\n")]
                 
                 for i, image_path in enumerate(image_paths):
-                    message_components.append(Image(path=image_path))
+                    message_components.append(Image(file=image_path))
                     if i < len(image_paths) - 1:  # 不是最后一张图片时添加换行
                         message_components.append(Plain("\n"))
                 
@@ -536,7 +536,7 @@ class JiMengAIPlugin(Star):
                     Plain(f"📝 提示词: {prompt}\n"),
                     Plain(f"🎨 模型: {model}\n"),
                     Plain(f"📐 尺寸: {args.get('width', 1024)}x{args.get('height', 1024)}\n"),
-                    Image(path=image_paths[0])
+                    Image(file=image_paths[0])
                 ])
                 return chain
             else:
@@ -551,7 +551,7 @@ class JiMengAIPlugin(Star):
                 # 添加所有图片
                 for i, image_path in enumerate(image_paths):
                     chain_items.append(Plain(f"图片 {i+1}:\n"))
-                    chain_items.append(Image(path=image_path))
+                    chain_items.append(Image(file=image_path))
                     if i < len(image_paths) - 1:  # 不是最后一张图片
                         chain_items.append(Plain("\n"))
                 
