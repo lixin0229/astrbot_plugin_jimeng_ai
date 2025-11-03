@@ -14,9 +14,9 @@ from .utils.jimeng_api import generate_image_jimeng
 
 @register("jimeng-ai", "lixin0229", "基于即梦AI接口的图像生成插件，支持多token轮询和丰富的参数配置", "1.0.0")
 class JiMengAIPlugin(Star):
-    def __init__(self, context: Context):
+    def __init__(self, context: Context, config: dict):
         super().__init__(context)
-        self.config = context.config_helper.get_all()
+        self.config = config or context.config_helper.get_all()
         
         # 验证配置
         self._validate_config()
