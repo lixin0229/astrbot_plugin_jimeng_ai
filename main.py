@@ -76,6 +76,45 @@ async def _decode_and_save_base64(data_b64: str) -> str:
         raise
 
 
+async def _download_image_from_url(image_url: str, timeout_seconds: int = 30) -> str:
+    """从URL下载图片并保存到本地"""
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            response = await client.get(image_url)
+            response.raise_for_status()
+            
+            # 从URL或Content-Type推断文件扩展名
+            content_type = response.headers.get('content-type', '').lower()
+            if 'jpeg' in content_type or 'jpg' in content_type:
+                suffix = 'jpg'
+            elif 'png' in content_type:
+                suffix = 'png'
+            elif 'webp' in content_type:
+                suffix = 'webp'
+            elif 'gif' in content_type:
+                suffix = 'gif'
+            else:
+                # 从URL推断
+                if image_url.lower().endswith(('.jpg', '.jpeg')):
+                    suffix = 'jpg'
+                elif image_url.lower().endswith('.png'):
+                    suffix = 'png'
+                elif image_url.lower().endswith('.webp'):
+                    suffix = 'webp'
+                elif image_url.lower().endswith('.gif'):
+                    suffix = 'gif'
+                else:
+                    suffix = 'png'  # 默认
+            
+            image_path = await _save_image_bytes(response.content, suffix)
+            logger.info(f"成功从URL下载图片: {image_url} -> {image_path}")
+            return image_path
+            
+    except Exception as e:
+        logger.error(f"从URL下载图片失败 {image_url}: {e}")
+        raise
+
+
 async def generate_image_jimeng(
     prompt: str,
     api_tokens: List[str],
@@ -87,7 +126,7 @@ async def generate_image_jimeng(
     sample_strength: float = 0.5,
     max_retry_attempts: int = 3,
     timeout_seconds: int = 60,
-) -> Tuple[Optional[str], Optional[str]]:
+) -> List[str]:
     """
     使用即梦AI生成图像
     
@@ -104,14 +143,14 @@ async def generate_image_jimeng(
         timeout_seconds: 超时时间
     
     Returns:
-        (image_url, image_path) 元组，image_url可能为None
+        List[str]: 本地图片路径列表
     """
     if isinstance(api_tokens, str):
         api_tokens = [api_tokens]
 
     if not api_tokens:
         logger.error("未提供API token")
-        return None, None
+        return []
 
     # 验证参数
     sample_strength = max(0.0, min(1.0, sample_strength))
@@ -166,56 +205,116 @@ async def generate_image_jimeng(
                                 logger.error(f"即梦AI API错误: {data['error']}")
                                 continue
                             
-                            # 尝试不同的响应格式
-                            image_data = None
-                            image_url = None
+                            # 收集所有图片数据
+                            image_paths = []
                             
                             # 格式1: OpenAI格式的choices
                             if "choices" in data and data["choices"]:
-                                choice = data["choices"][0]
-                                if "message" in choice and "content" in choice["message"]:
-                                    content = choice["message"]["content"]
-                                    # 检查是否包含图像URL
-                                    if "![image_" in content and "https://" in content:
-                                        # 提取URL
-                                        import re
-                                        url_match = re.search(r'https://[^\s\)]+', content)
-                                        if url_match:
-                                            image_url = url_match.group(0)
-                                    elif isinstance(content, str) and len(content) > 100:
-                                        # 可能是base64数据
-                                        image_data = content
+                                for choice in data["choices"]:
+                                    if "message" in choice and "content" in choice["message"]:
+                                        content = choice["message"]["content"]
+                                        # 检查是否包含图像URL
+                                        if "![image_" in content and "https://" in content:
+                                            # 提取所有URL
+                                            import re
+                                            urls = re.findall(r'https://[^\s\)]+', content)
+                                            for image_url in urls:
+                                                try:
+                                                    image_path = await _download_image_from_url(image_url, timeout_seconds)
+                                                    image_paths.append(image_path)
+                                                except Exception as e:
+                                                    logger.error(f"下载图片失败: {e}")
+                                        elif isinstance(content, str) and len(content) > 100:
+                                            # 可能是base64数据
+                                            try:
+                                                image_path = await _decode_and_save_base64(content)
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"处理base64数据失败: {e}")
                             
-                            # 格式2: 直接返回base64数据
-                            elif "data" in data and isinstance(data["data"], str):
-                                image_data = data["data"]
+                            # 格式2: 直接返回数据数组
+                            elif "data" in data:
+                                data_list = data["data"] if isinstance(data["data"], list) else [data["data"]]
+                                for item in data_list:
+                                    if isinstance(item, str):
+                                        if item.startswith("http"):
+                                            # URL格式
+                                            try:
+                                                image_path = await _download_image_from_url(item, timeout_seconds)
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"下载图片失败: {e}")
+                                        else:
+                                            # base64格式
+                                            try:
+                                                image_path = await _decode_and_save_base64(item)
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"处理base64数据失败: {e}")
+                                    elif isinstance(item, dict):
+                                        # 嵌套对象格式
+                                        if "url" in item:
+                                            try:
+                                                image_path = await _download_image_from_url(item["url"], timeout_seconds)
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"下载图片失败: {e}")
+                                        elif "data" in item:
+                                            try:
+                                                image_path = await _decode_and_save_base64(item["data"])
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"处理base64数据失败: {e}")
                             
-                            # 格式3: 直接在根级别
+                            # 格式3: 直接在根级别的images数组
+                            elif "images" in data:
+                                images_list = data["images"] if isinstance(data["images"], list) else [data["images"]]
+                                for item in images_list:
+                                    if isinstance(item, str):
+                                        if item.startswith("http"):
+                                            try:
+                                                image_path = await _download_image_from_url(item, timeout_seconds)
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"下载图片失败: {e}")
+                                        else:
+                                            try:
+                                                image_path = await _decode_and_save_base64(item)
+                                                image_paths.append(image_path)
+                                            except Exception as e:
+                                                logger.error(f"处理base64数据失败: {e}")
+                                    elif isinstance(item, dict) and "url" in item:
+                                        try:
+                                            image_path = await _download_image_from_url(item["url"], timeout_seconds)
+                                            image_paths.append(image_path)
+                                        except Exception as e:
+                                            logger.error(f"下载图片失败: {e}")
+                            
+                            # 格式4: 单个URL或base64
+                            elif "url" in data:
+                                try:
+                                    image_path = await _download_image_from_url(data["url"], timeout_seconds)
+                                    image_paths.append(image_path)
+                                except Exception as e:
+                                    logger.error(f"下载图片失败: {e}")
                             elif "image" in data:
                                 if isinstance(data["image"], str):
-                                    image_data = data["image"]
-                                elif isinstance(data["image"], dict) and "data" in data["image"]:
-                                    image_data = data["image"]["data"]
+                                    if data["image"].startswith("http"):
+                                        try:
+                                            image_path = await _download_image_from_url(data["image"], timeout_seconds)
+                                            image_paths.append(image_path)
+                                        except Exception as e:
+                                            logger.error(f"下载图片失败: {e}")
+                                    else:
+                                        try:
+                                            image_path = await _decode_and_save_base64(data["image"])
+                                            image_paths.append(image_path)
+                                        except Exception as e:
+                                            logger.error(f"处理base64数据失败: {e}")
                             
-                            # 格式4: URL格式
-                            elif "url" in data:
-                                image_url = data["url"]
-                            
-                            # 处理base64数据
-                            if image_data:
-                                try:
-                                    image_path = await _decode_and_save_base64(image_data)
-                                    logger.info(f"✅ 即梦AI图像生成成功，已保存到: {image_path}")
-                                    return image_url, image_path
-                                except Exception as e:
-                                    logger.error(f"保存图像失败: {e}")
-                                    continue
-                            
-                            # 处理URL
-                            elif image_url:
-                                logger.info(f"✅ 即梦AI图像生成成功，URL: {image_url}")
-                                return image_url, None
-                            
+                            if image_paths:
+                                logger.info(f"✅ 即梦AI成功生成 {len(image_paths)} 张图像")
+                                return image_paths
                             else:
                                 logger.warning(f"未找到图像数据，响应结构: {json.dumps(data, indent=2)[:500]}...")
                                 continue
@@ -250,7 +349,7 @@ async def generate_image_jimeng(
         await _token_state.rotate(api_tokens)
 
     logger.error("所有token都失败了")
-    return None, None
+    return []
 
 
 @register("jimeng-ai", "lixin0229", "基于即梦AI接口的图像生成插件，支持多token轮询和丰富的参数配置", "1.0.0")
@@ -322,7 +421,7 @@ class JiMengAIPlugin(Star):
             await event.send(event.plain_result("🎨 正在使用即梦AI为您生成图像，请稍候..."))
             
             # 生成图像，使用默认配置
-            image_url, image_path = await generate_image_jimeng(
+            image_paths = await generate_image_jimeng(
                 prompt=prompt,
                 api_tokens=self.api_tokens,
                 api_base_url=self.config["api_base_url"],
@@ -335,10 +434,12 @@ class JiMengAIPlugin(Star):
                 timeout_seconds=self.config.get("timeout_seconds", 60),
             )
             
-            if image_path:
-                await event.send(event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像已保存到: {image_path}"))
-            elif image_url:
-                await event.send(event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像URL: {image_url}"))
+            if image_paths:
+                if len(image_paths) == 1:
+                    await event.send(event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像已保存到: {image_paths[0]}"))
+                else:
+                    paths_text = "\n".join([f"  {i+1}. {path}" for i, path in enumerate(image_paths)])
+                    await event.send(event.plain_result(f"✅ 成功生成 {len(image_paths)} 张图像！\n提示词: {prompt}\n图像已保存到:\n{paths_text}"))
             else:
                 await event.send(event.plain_result(f"❌ 图像生成失败，请稍后重试"))
                 
@@ -409,7 +510,7 @@ class JiMengAIPlugin(Star):
         model = args.get("model", self.config.get("default_model", "jimeng-3.0"))
         
         # 生成图像
-        image_url, image_path = await generate_image_jimeng(
+        image_paths = await generate_image_jimeng(
             prompt=prompt,
             api_tokens=self.api_tokens,
             api_base_url=self.config["api_base_url"],
@@ -422,18 +523,34 @@ class JiMengAIPlugin(Star):
             timeout_seconds=self.config.get("timeout_seconds", 60),
         )
         
-        if image_path:
-            # 构建消息链
-            chain = MessageChain([
-                Plain(f"✅ 即梦AI图像生成完成！\n"),
-                Plain(f"📝 提示词: {prompt}\n"),
-                Plain(f"🎨 模型: {model}\n"),
-                Plain(f"📐 尺寸: {args.get('width', 1024)}x{args.get('height', 1024)}\n"),
-                Image(path=image_path)
-            ])
-            return chain
-        elif image_url:
-            return f"✅ 即梦AI图像生成完成！\n📝 提示词: {prompt}\n🎨 模型: {model}\n🔗 图像URL: {image_url}"
+        if image_paths:
+            if len(image_paths) == 1:
+                # 单张图片
+                chain = MessageChain([
+                    Plain(f"✅ 即梦AI图像生成完成！\n"),
+                    Plain(f"📝 提示词: {prompt}\n"),
+                    Plain(f"🎨 模型: {model}\n"),
+                    Plain(f"📐 尺寸: {args.get('width', 1024)}x{args.get('height', 1024)}\n"),
+                    Image(path=image_paths[0])
+                ])
+                return chain
+            else:
+                # 多张图片
+                chain_items = [
+                    Plain(f"✅ 即梦AI成功生成 {len(image_paths)} 张图像！\n"),
+                    Plain(f"📝 提示词: {prompt}\n"),
+                    Plain(f"🎨 模型: {model}\n"),
+                    Plain(f"📐 尺寸: {args.get('width', 1024)}x{args.get('height', 1024)}\n\n")
+                ]
+                
+                # 添加所有图片
+                for i, image_path in enumerate(image_paths):
+                    chain_items.append(Plain(f"图片 {i+1}:\n"))
+                    chain_items.append(Image(path=image_path))
+                    if i < len(image_paths) - 1:  # 不是最后一张图片
+                        chain_items.append(Plain("\n"))
+                
+                return MessageChain(chain_items)
         else:
             return f"❌ 图像生成失败，请检查配置或稍后重试\n📝 提示词: {prompt}"
 
