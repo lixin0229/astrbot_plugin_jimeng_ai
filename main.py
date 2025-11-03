@@ -7,12 +7,14 @@ from typing import Dict, List, Optional, Union
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
+from astrbot.api.all import *
 from astrbot.core.message.components import Reply, Image
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Union
 import asyncio
 import base64
 import json
 import uuid
+import re
 from datetime import datetime
 from pathlib import Path
 import httpx
