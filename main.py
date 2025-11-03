@@ -4,12 +4,10 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 
-from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
-from astrbot.api.event import MessageChain
 from astrbot.api.message_components import Plain, Image
-from astrbot.api.llm_tool import LLMToolCall, LLMToolResult
 
 from .utils.jimeng_api import generate_image_jimeng
 
@@ -72,8 +70,21 @@ class JiMengAIPlugin(Star):
 
     @filter.llm_tool(name="jimeng_ai_image_generation")
     async def llm_image_generation(self, event: AstrMessageEvent, prompt: str, negative_prompt: str = "", model: str = "jimeng-3.0", width: int = 1024, height: int = 1024, sample_strength: float = 0.5):
-        """LLM工具：图像生成"""
+        """
+        LLM工具：使用即梦AI生成图像
+        
+        Args:
+            prompt(str): 图像生成提示词，描述想要生成的图像内容
+            negative_prompt(str): 负面提示词，描述不希望出现的内容（可选）
+            model(str): 使用的模型，默认为jimeng-3.0
+            width(int): 图像宽度，默认1024
+            height(int): 图像高度，默认1024
+            sample_strength(float): 采样强度，默认0.5
+        """
         try:
+            # 发送状态消息
+            await event.send(event.plain_result("🎨 正在使用即梦AI为您生成图像，请稍候..."))
+            
             # 生成图像
             image_url, image_path = await generate_image_jimeng(
                 prompt=prompt,
@@ -89,15 +100,15 @@ class JiMengAIPlugin(Star):
             )
             
             if image_path:
-                yield event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像已保存到: {image_path}")
+                await event.send(event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像已保存到: {image_path}"))
             elif image_url:
-                yield event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像URL: {image_url}")
+                await event.send(event.plain_result(f"✅ 图像生成成功！\n提示词: {prompt}\n图像URL: {image_url}"))
             else:
-                yield event.plain_result(f"❌ 图像生成失败，请稍后重试")
+                await event.send(event.plain_result(f"❌ 图像生成失败，请稍后重试"))
                 
         except Exception as e:
             logger.error(f"LLM图像生成工具失败: {e}")
-            yield event.plain_result(f"❌ 图像生成失败: {str(e)}")
+            await event.send(event.plain_result(f"❌ 图像生成失败: {str(e)}"))
 
     def _parse_command_args(self, message_text: str) -> Dict:
         """解析命令参数"""
