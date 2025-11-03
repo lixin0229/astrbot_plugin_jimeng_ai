@@ -5,9 +5,9 @@
     "default": "http://xxx:8101"
   },
   "api_tokens": {
-    "description": "API Token列表（支持多个token轮询）",
+    "description": "API Token列表（支持多个token轮询，请替换为真实token）",
     "type": "list",
-    "default": ["xxx"]
+    "default": ["请在此处填入您的即梦AI API Token"]
   },
   "default_model": {
     "description": "默认模型",
